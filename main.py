@@ -4,9 +4,9 @@ import time
 import threading
 import flet as ft
 
-# Путь к файлу со скинами в папке Download
+# Настройки путей и логики
 TXT_PATH = "/storage/emulated/0/Download/skin_ids.txt"
-LOAD_THRESHOLD = 300000  # 300MB
+LOAD_THRESHOLD = 300000
 STABILIZE_TIME = 3
 REVERT_DELAY = 30
 
@@ -119,91 +119,221 @@ def get_memory_usage(pid):
     except:
         return 0
 
-def main(page: ft.Page):
-    page.title = "Standoff 2 Skin Manager"
-    page.window_width = 400
-    page.window_height = 600
-    page.theme_mode = ft.ThemeMode.DARK
+def check_root():
+    """Проверка наличия root-прав"""
+    try:
+        return os.getuid() == 0
+    except:
+        return False
 
-    skins_dict = load_skins_from_txt()
-    skin_names = list(skins_dict.keys())
-
-    config = {
-        "mode": "auto",
-        "old_id": None,
-        "new_id": None,
-        "is_running": False,
-        "last_addresses": []
-    }
-
-    status_text = ft.Text("Статус: Остановлен", color=ft.colors.RED, weight=ft.FontWeight.BOLD)
-    log_output = ft.Text("Логи: Ожидание действий...", size=12, color=ft.colors.GREY_400)
-
-    # --- ВКЛАДКА INV ---
-    old_search = ft.TextField(label="Найти старый скин (например, M4A1)", text_size=12)
-    old_suggestions = ft.ListView(expand=False, spacing=2, padding=5, height=120)
+class SkinManagerApp:
+    def __init__(self, page: ft.Page):
+        self.page = page
+        self.page.title = "Standoff 2 Skin Manager"
+        self.page.window_width = 400
+        self.page.window_height = 600
+        self.page.theme_mode = ft.ThemeMode.DARK
+        
+        self.skins_dict = load_skins_from_txt()
+        self.skin_names = list(self.skins_dict.keys())
+        
+        # Глобальные переменные состояния
+        self.config = {
+            "mode": "auto",
+            "old_id": None,
+            "new_id": None,
+            "is_running": False,
+            "last_addresses": [],
+            "worker_thread": None
+        }
+        
+        self.setup_ui()
+        
+        # Проверка root
+        if not check_root():
+            self.log_output.value = "⚠️ Требуются root-права для работы с памятью!"
+            self.page.update()
     
-    new_search = ft.TextField(label="Найти новый скин (например, JadeStone)", text_size=12)
-    new_suggestions = ft.ListView(expand=False, spacing=2, padding=5, height=120)
-
-    selected_old_txt = ft.Text("Старый: Не выбран", size=12, color=ft.colors.YELLOW)
-    selected_new_txt = ft.Text("Новый: Не выбран", size=12, color=ft.colors.GREEN)
-
-    def select_skin(name, is_old):
-        skin_id = skins_dict[name]
-        if is_old:
-            config["old_id"] = skin_id
-            old_search.value = name
-            old_suggestions.controls.clear()
-            selected_old_txt.value = f"Старый: {name} [{skin_id}]"
-        else:
-            config["new_id"] = skin_id
-            new_search.value = name
-            new_suggestions.controls.clear()
-            selected_new_txt.value = f"Новый: {name} [{skin_id}]"
-        page.update()
-
-    def filter_skins(e, is_old=True):
+    def setup_ui(self):
+        """Настройка интерфейса"""
+        # Используем ft.Colors вместо ft.colors
+        self.status_text = ft.Text("Статус: Остановлен", color=ft.Colors.RED, weight=ft.FontWeight.BOLD)
+        self.log_output = ft.Text("Логи: Ожидание действий...", size=12, color=ft.Colors.GREY_400)
+        
+        # ВКЛАДКА: IN
+        self.setup_inv_tab()
+        
+        # ВКЛАДКА: SETTING
+        self.setup_setting_tab()
+        
+        # ВКЛАДКА: START
+        self.setup_start_tab()
+        
+        # Сборка интерфейса
+        self.page.add(
+            ft.Tabs(
+                selected_index=0,
+                animation_duration=300,
+                tabs=[
+                    ft.Tab(text="Start", content=ft.Container(content=self.start_tab, padding=10)),
+                    ft.Tab(text="Inv", content=ft.Container(content=self.inv_tab, padding=10)),
+                    ft.Tab(text="Setting", content=ft.Container(content=self.setting_tab, padding=10)),
+                ],
+                expand=1
+            )
+        )
+    
+    def setup_inv_tab(self):
+        """Настройка вкладки инвентаря"""
+        self.old_search = ft.TextField(label="Найти старый скин (например, M4A1)", text_size=12)
+        self.old_suggestions = ft.ListView(expand=1, spacing=2, padding=5, auto_scroll=False, height=100)
+        
+        self.new_search = ft.TextField(label="Найти новый скин (например, JadeStone)", text_size=12)
+        self.new_suggestions = ft.ListView(expand=1, spacing=2, padding=5, auto_scroll=False, height=100)
+        
+        self.selected_old_txt = ft.Text("Старый: Не выбран", size=12, color=ft.Colors.YELLOW)
+        self.selected_new_txt = ft.Text("Новый: Не выбран", size=12, color=ft.Colors.GREEN)
+        
+        self.old_search.on_change = lambda e: self.filter_skins(e, True)
+        self.new_search.on_change = lambda e: self.filter_skins(e, False)
+        
+        self.inv_tab = ft.Column([
+            ft.Text(f"Загружено скинов из TXT: {len(self.skins_dict)}", size=12, color=ft.Colors.BLUE_200),
+            self.old_search,
+            self.old_suggestions,
+            self.selected_old_txt,
+            ft.Divider(),
+            self.new_search,
+            self.new_suggestions,
+            self.selected_new_txt,
+        ], scroll=ft.ScrollMode.AUTO)
+    
+    def filter_skins(self, e, is_old=True):
         query = e.control.value.lower()
-        s_list = old_suggestions if is_old else new_suggestions
+        s_list = self.old_suggestions if is_old else self.new_suggestions
         s_list.controls.clear()
         
         if len(query) > 1:
-            matches = [name for name in skin_names if query in name.lower()][:10]
+            matches = [name for name in self.skin_names if query in name.lower()][:15]
             for name in matches:
                 s_list.controls.append(
                     ft.ListTile(
-                        title=ft.Text(f"{name} ({skins_dict[name]})", size=12),
-                        on_click=lambda _, n=name, io=is_old: select_skin(n, io)
+                        title=ft.Text(f"{name} ({self.skins_dict[name]})", size=12),
+                        on_click=lambda _, n=name, io=is_old: self.select_skin(n, io)
                     )
                 )
-        page.update()
-
-    old_search.on_change = lambda e: filter_skins(e, True)
-    new_search.on_change = lambda e: filter_skins(e, False)
-
-    inv_tab = ft.Column([
-        ft.Text(f"Загружено скинов: {len(skins_dict)}", size=12, color=ft.colors.BLUE_200),
-        old_search,
-        old_suggestions,
-        selected_old_txt,
-        ft.Divider(),
-        new_search,
-        new_suggestions,
-        selected_new_txt,
-    ], scroll=ft.ScrollMode.AUTO)
-
-    # --- ФОНОВЫЙ ПОТОК АВТОМАТИЗАЦИИ ---
-    def worker_loop():
+        self.page.update()
+    
+    def select_skin(self, name, is_old):
+        skin_id = self.skins_dict[name]
+        if is_old:
+            self.config["old_id"] = skin_id
+            self.old_search.value = name
+            self.old_suggestions.controls.clear()
+            self.selected_old_txt.value = f"Старый: {name} [{skin_id}]"
+        else:
+            self.config["new_id"] = skin_id
+            self.new_search.value = name
+            self.new_suggestions.controls.clear()
+            self.selected_new_txt.value = f"Новый: {name} [{skin_id}]"
+        self.page.update()
+    
+    def setup_setting_tab(self):
+        """Настройка вкладки настроек"""
+        self.mode_dropdown = ft.Dropdown(
+            label="Режим работы",
+            value="auto",
+            options=[
+                ft.dropdown.Option("auto", "Автоматический"),
+                ft.dropdown.Option("manual", "Ручной"),
+            ],
+            width=250
+        )
+        self.mode_dropdown.on_change = self.on_mode_change
+        
+        self.setting_tab = ft.Column([
+            ft.Text("Параметры запуска", weight=ft.FontWeight.BOLD),
+            self.mode_dropdown,
+            ft.Text("В автоматическом режиме скрипт сам ждет загрузку матча.\nВ ручном вы управляете кнопками на вкладке Start.", size=11, color=ft.Colors.GREY_500)
+        ])
+    
+    def setup_start_tab(self):
+        """Настройка вкладки запуска"""
+        self.manual_controls = ft.Column([
+            ft.ElevatedButton("Начать замену", on_click=self.manual_apply, bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, width=200),
+            ft.ElevatedButton("Бекнуть замену", on_click=self.manual_revert, bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, width=200),
+        ], visible=False)
+        
+        self.start_stop_btn = ft.ElevatedButton("Запустить авто", on_click=self.toggle_auto_start, bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE, width=200)
+        
+        self.start_tab = ft.Column([
+            self.status_text,
+            ft.Divider(),
+            self.start_stop_btn,
+            self.manual_controls,
+            ft.Divider(),
+            ft.Text("Логи выполнения:", weight=ft.FontWeight.BOLD),
+            self.log_output
+        ], alignment=ft.MainAxisAlignment.START)
+    
+    def on_mode_change(self, e):
+        if self.mode_dropdown.value == "manual":
+            self.config["is_running"] = False
+            self.manual_controls.visible = True
+            self.start_stop_btn.visible = False
+            self.status_text.value = "Статус: Ручной режим"
+            self.status_text.color = ft.Colors.ORANGE
+        else:
+            self.manual_controls.visible = False
+            self.start_stop_btn.visible = True
+            self.status_text.value = "Статус: Остановлен"
+            self.status_text.color = ft.Colors.RED
+            self.start_stop_btn.text = "Запустить авто"
+            self.start_stop_btn.bgcolor = ft.Colors.GREEN
+        self.page.update()
+    
+    def log(self, message):
+        """Добавление сообщения в логи"""
+        self.log_output.value = message
+        self.page.update()
+    
+    def toggle_auto_start(self, e):
+        if not self.config["old_id"] or not self.config["new_id"]:
+            self.log("[-] Выберите скины во вкладке INV!")
+            return
+        
+        if not check_root():
+            self.log("[-] Требуются root-права!")
+            return
+        
+        if not self.config["is_running"]:
+            self.config["is_running"] = True
+            self.status_text.value = "Статус: Работает (Авто-мониторинг)"
+            self.status_text.color = ft.Colors.GREEN
+            self.start_stop_btn.text = "Остановить авто"
+            self.start_stop_btn.bgcolor = ft.Colors.RED
+            
+            self.config["worker_thread"] = threading.Thread(target=self.worker_loop, daemon=True)
+            self.config["worker_thread"].start()
+        else:
+            self.config["is_running"] = False
+            self.status_text.value = "Статус: Остановлен"
+            self.status_text.color = ft.Colors.RED
+            self.start_stop_btn.text = "Запустить авто"
+            self.start_stop_btn.bgcolor = ft.Colors.GREEN
+        self.page.update()
+    
+    def worker_loop(self):
+        """Основной рабочий цикл"""
         pid = find_pid("com.axlebolt.standoff2")
         if not pid:
-            log_output.value = "[-] Игра не запущена!"
-            page.update()
-            config["is_running"] = False
+            self.log("[-] Игра не запущена!")
+            self.config["is_running"] = False
+            self.page.update()
             return
 
-        old_bytes = config["old_id"].to_bytes(4, byteorder="little")
-        new_bytes = config["new_id"].to_bytes(4, byteorder="little")
+        old_bytes = self.config["old_id"].to_bytes(4, byteorder="little")
+        new_bytes = self.config["new_id"].to_bytes(4, byteorder="little")
 
         initial_mem = get_memory_usage(pid)
         loading_detected = False
@@ -211,7 +341,14 @@ def main(page: ft.Page):
         stable_count = 0
         last_mem = 0
 
-        while config["is_running"]:
+        while self.config["is_running"]:
+            # Проверка, что игра все еще запущена
+            if not find_pid("com.axlebolt.standoff2"):
+                self.log("[-] Игра была закрыта!")
+                self.config["is_running"] = False
+                self.page.update()
+                break
+            
             current_mem = get_memory_usage(pid)
             if current_mem > 0:
                 diff = current_mem - initial_mem
@@ -219,8 +356,7 @@ def main(page: ft.Page):
                 if diff > LOAD_THRESHOLD and not loading_detected:
                     loading_detected = True
                     peak_mem = current_mem
-                    log_output.value = "[+] Начало загрузки матча..."
-                    page.update()
+                    self.log("[+] Начало загрузки матча...")
 
                 if loading_detected:
                     if current_mem > peak_mem:
@@ -231,24 +367,25 @@ def main(page: ft.Page):
                         if change < 5000:
                             stable_count += 1
                             if stable_count >= STABILIZE_TIME:
-                                log_output.value = "[+] 100% загрузки! Применяем скин..."
-                                page.update()
+                                self.log("[+] 100% загрузки! Применяем скин...")
                                 
                                 addrs, success = find_and_replace(pid, old_bytes, new_bytes)
                                 if success:
-                                    config["last_addresses"] = addrs
-                                    log_output.value = f"[+] Заменено адресов: {len(addrs)}"
-                                    page.update()
+                                    self.config["last_addresses"] = addrs
+                                    self.log(f"[+] Успешно заменено: {len(addrs)} адресов")
                                     
+                                    # Обратный отсчет
                                     for i in range(REVERT_DELAY, 0, -1):
-                                        if not config["is_running"]: break
-                                        log_output.value = f"[*] Откат через {i} сек..."
-                                        page.update()
+                                        if not self.config["is_running"]:
+                                            break
+                                        self.log(f"[*] Авто-откат через {i} сек...")
                                         time.sleep(1)
                                     
-                                    revert_changes(pid, addrs, old_bytes, new_bytes)
-                                    log_output.value = "[+] Изменения откачены."
-                                    page.update()
+                                    if self.config["is_running"]:
+                                        revert_changes(pid, addrs, old_bytes, new_bytes)
+                                        self.log("[+] Изменения откачены.")
+                                else:
+                                    self.log("[-] Не удалось найти адреса для замены.")
                                 
                                 loading_detected = False
                                 stable_count = 0
@@ -257,125 +394,60 @@ def main(page: ft.Page):
                                 stable_count = 0
                     last_mem = current_mem
             time.sleep(1)
-
-    # --- ВКЛАДКА SETTING ---
-    mode_dropdown = ft.Dropdown(
-        label="Режим работы",
-        value="auto",
-        options=[
-            ft.dropdown.Option("auto", "Автоматический"),
-            ft.dropdown.Option("manual", "Ручной"),
-        ],
-        width=250
-    )
-
-    setting_tab = ft.Column([
-        ft.Text("Настройки", weight=ft.FontWeight.BOLD),
-        mode_dropdown,
-        ft.Text("Авто — ждет загрузку матча сам.\nРучной — управление кнопками во вкладке Start.", size=11, color=ft.colors.GREY_500)
-    ])
-
-    # --- ВКЛАДКА START ---
-    def manual_apply(e):
-        if not config["old_id"] or not config["new_id"]:
-            log_output.value = "[-] Выберите скины во вкладке INV!"
-            page.update()
-            return
-        pid = find_pid("com.axlebolt.standoff2")
-        if not pid:
-            log_output.value = "[-] Игра не запущена!"
-            page.update()
+        
+        # Очистка состояния при выходе
+        self.config["is_running"] = False
+        self.page.update()
+    
+    def manual_apply(self, e):
+        if not self.config["old_id"] or not self.config["new_id"]:
+            self.log("[-] Сначала выберите скины во вкладке INV!")
             return
         
-        old_bytes = config["old_id"].to_bytes(4, byteorder="little")
-        new_bytes = config["new_id"].to_bytes(4, byteorder="little")
+        if not check_root():
+            self.log("[-] Требуются root-права!")
+            return
+        
+        pid = find_pid("com.axlebolt.standoff2")
+        if not pid:
+            self.log("[-] Игра не запущена!")
+            return
+        
+        old_bytes = self.config["old_id"].to_bytes(4, byteorder="little")
+        new_bytes = self.config["new_id"].to_bytes(4, byteorder="little")
         
         addrs, success = find_and_replace(pid, old_bytes, new_bytes)
         if success:
-            config["last_addresses"] = addrs
-            log_output.value = f"[+] Ручная замена успешна! Найдено: {len(addrs)}"
+            self.config["last_addresses"] = addrs
+            self.log(f"[+] Ручная замена успешна! Найдено: {len(addrs)} адресов")
         else:
-            log_output.value = "[-] Адреса не найдены."
-        page.update()
-
-    def manual_revert(e):
+            self.log("[-] Не удалось найти адреса для замены.")
+    
+    def manual_revert(self, e):
+        if not self.config["last_addresses"]:
+            self.log("[-] Нечего откатывать!")
+            return
+        
+        if not check_root():
+            self.log("[-] Требуются root-права!")
+            return
+        
         pid = find_pid("com.axlebolt.standoff2")
-        if not pid or not config["last_addresses"]:
-            log_output.value = "[-] Нечего откатывать!"
-            page.update()
+        if not pid:
+            self.log("[-] Игра не запущена!")
             return
         
-        old_bytes = config["old_id"].to_bytes(4, byteorder="little")
-        new_bytes = config["new_id"].to_bytes(4, byteorder="little")
+        old_bytes = self.config["old_id"].to_bytes(4, byteorder="little")
+        new_bytes = self.config["new_id"].to_bytes(4, byteorder="little")
         
-        if revert_changes(pid, config["last_addresses"], old_bytes, new_bytes):
-            log_output.value = "[+] Успешный ручной откат!"
+        if revert_changes(pid, self.config["last_addresses"], old_bytes, new_bytes):
+            self.log("[+] Успешный ручной откат!")
+            self.config["last_addresses"] = []
         else:
-            log_output.value = "[-] Ошибка отката."
-        page.update()
+            self.log("[-] Ошибка отката.")
 
-    def toggle_auto_start(e):
-        if not config["old_id"] or not config["new_id"]:
-            log_output.value = "[-] Выберите скины во вкладке INV!"
-            page.update()
-            return
-        
-        if not config["is_running"]:
-            config["is_running"] = True
-            status_text.value = "Статус: Авто-мониторинг активен"
-            status_text.color = ft.colors.GREEN
-            start_stop_btn.text = "Остановить авто"
-            start_stop_btn.bgcolor = ft.colors.RED
-            threading.Thread(target=worker_loop, daemon=True).start()
-        else:
-            config["is_running"] = False
-            status_text.value = "Статус: Остановлен"
-            status_text.color = ft.colors.RED
-            start_stop_btn.text = "Запустить авто"
-            start_stop_btn.bgcolor = ft.colors.GREEN
-        page.update()
+def main(page: ft.Page):
+    app = SkinManagerApp(page)
 
-    manual_controls = ft.Column([
-        ft.ElevatedButton("Начать замену", on_click=manual_apply, bgcolor=ft.colors.BLUE, color=ft.colors.WHITE, width=200),
-        ft.ElevatedButton("Бекнуть замену", on_click=manual_revert, bgcolor=ft.colors.ORANGE, color=ft.colors.WHITE, width=200),
-    ], visible=False)
-
-    start_stop_btn = ft.ElevatedButton("Запустить авто", on_click=toggle_auto_start, bgcolor=ft.colors.GREEN, color=ft.colors.WHITE, width=200, visible=True)
-
-    def on_mode_change(e):
-        if mode_dropdown.value == "manual":
-            config["is_running"] = False
-            manual_controls.visible = True
-            start_stop_btn.visible = False
-            status_text.value = "Статус: Ручной режим"
-        else:
-            manual_controls.visible = False
-            start_stop_btn.visible = True
-            status_text.value = "Статус: Остановлен"
-        page.update()
-
-    mode_dropdown.on_change = on_mode_change
-
-    start_tab = ft.Column([
-        status_text,
-        ft.Divider(),
-        start_stop_btn,
-        manual_controls,
-        ft.Divider(),
-        ft.Text("Логи выполнения:", weight=ft.FontWeight.BOLD),
-        log_output
-    ])
-
-    page.add(
-        ft.Tabs(
-            selected_index=0,
-            tabs=[
-                ft.Tab(text="Start", content=ft.Container(content=start_tab, padding=10)),
-                ft.Tab(text="Inv", content=ft.Container(content=inv_tab, padding=10)),
-                ft.Tab(text="Setting", content=ft.Container(content=setting_tab, padding=10)),
-            ],
-            expand=1
-        )
-    )
-
-ft.app(target=main)
+if __name__ == "__main__":
+    ft.app(target=main)
