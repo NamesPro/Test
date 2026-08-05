@@ -147,6 +147,10 @@ class SkinManagerApp:
             "worker_thread": None
         }
         
+        # Создаем элементы управления ДО вызова setup_ui
+        self.status_text = ft.Text("Статус: Остановлен", color=ft.Colors.RED, weight=ft.FontWeight.BOLD)
+        self.log_output = ft.Text("Логи: Ожидание действий...", size=12, color=ft.Colors.GREY_400)
+        
         self.setup_ui()
         
         # Проверка root
@@ -156,10 +160,6 @@ class SkinManagerApp:
     
     def setup_ui(self):
         """Настройка интерфейса"""
-        # Используем ft.Colors вместо ft.colors
-        self.status_text = ft.Text("Статус: Остановлен", color=ft.Colors.RED, weight=ft.FontWeight.BOLD)
-        self.log_output = ft.Text("Логи: Ожидание действий...", size=12, color=ft.Colors.GREY_400)
-        
         # ВКЛАДКА: IN
         self.setup_inv_tab()
         
@@ -175,9 +175,9 @@ class SkinManagerApp:
                 selected_index=0,
                 animation_duration=300,
                 tabs=[
-                    ft.Tab(text="Start", content=ft.Container(content=self.start_tab, padding=10)),
-                    ft.Tab(text="Inv", content=ft.Container(content=self.inv_tab, padding=10)),
-                    ft.Tab(text="Setting", content=ft.Container(content=self.setting_tab, padding=10)),
+                    ft.Tab(label="Start", content=ft.Container(content=self.start_tab, padding=10)),
+                    ft.Tab(label="Inv", content=ft.Container(content=self.inv_tab, padding=10)),
+                    ft.Tab(label="Setting", content=ft.Container(content=self.setting_tab, padding=10)),
                 ],
                 expand=1
             )
@@ -197,16 +197,20 @@ class SkinManagerApp:
         self.old_search.on_change = lambda e: self.filter_skins(e, True)
         self.new_search.on_change = lambda e: self.filter_skins(e, False)
         
-        self.inv_tab = ft.Column([
-            ft.Text(f"Загружено скинов из TXT: {len(self.skins_dict)}", size=12, color=ft.Colors.BLUE_200),
-            self.old_search,
-            self.old_suggestions,
-            self.selected_old_txt,
-            ft.Divider(),
-            self.new_search,
-            self.new_suggestions,
-            self.selected_new_txt,
-        ], scroll=ft.ScrollMode.AUTO)
+        self.inv_tab = ft.Column(
+            [
+                ft.Text(f"Загружено скинов из TXT: {len(self.skins_dict)}", size=12, color=ft.Colors.BLUE_200),
+                self.old_search,
+                self.old_suggestions,
+                self.selected_old_txt,
+                ft.Divider(height=1),
+                self.new_search,
+                self.new_suggestions,
+                self.selected_new_txt,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            spacing=10
+        )
     
     def filter_skins(self, e, is_old=True):
         query = e.control.value.lower()
@@ -251,30 +255,64 @@ class SkinManagerApp:
         )
         self.mode_dropdown.on_change = self.on_mode_change
         
-        self.setting_tab = ft.Column([
-            ft.Text("Параметры запуска", weight=ft.FontWeight.BOLD),
-            self.mode_dropdown,
-            ft.Text("В автоматическом режиме скрипт сам ждет загрузку матча.\nВ ручном вы управляете кнопками на вкладке Start.", size=11, color=ft.Colors.GREY_500)
-        ])
+        self.setting_tab = ft.Column(
+            [
+                ft.Text("Параметры запуска", weight=ft.FontWeight.BOLD),
+                self.mode_dropdown,
+                ft.Text(
+                    "В автоматическом режиме скрипт сам ждет загрузку матча.\nВ ручном вы управляете кнопками на вкладке Start.",
+                    size=11,
+                    color=ft.Colors.GREY_500
+                ),
+            ],
+            spacing=15
+        )
     
     def setup_start_tab(self):
         """Настройка вкладки запуска"""
-        self.manual_controls = ft.Column([
-            ft.ElevatedButton("Начать замену", on_click=self.manual_apply, bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, width=200),
-            ft.ElevatedButton("Бекнуть замену", on_click=self.manual_revert, bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, width=200),
-        ], visible=False)
+        self.manual_controls = ft.Column(
+            [
+                ft.ElevatedButton(
+                    "Начать замену",
+                    on_click=self.manual_apply,
+                    bgcolor=ft.Colors.BLUE,
+                    color=ft.Colors.WHITE,
+                    width=200
+                ),
+                ft.ElevatedButton(
+                    "Бекнуть замену",
+                    on_click=self.manual_revert,
+                    bgcolor=ft.Colors.ORANGE,
+                    color=ft.Colors.WHITE,
+                    width=200
+                ),
+            ],
+            spacing=10,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            visible=False
+        )
         
-        self.start_stop_btn = ft.ElevatedButton("Запустить авто", on_click=self.toggle_auto_start, bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE, width=200)
+        self.start_stop_btn = ft.ElevatedButton(
+            "Запустить авто",
+            on_click=self.toggle_auto_start,
+            bgcolor=ft.Colors.GREEN,
+            color=ft.Colors.WHITE,
+            width=200
+        )
         
-        self.start_tab = ft.Column([
-            self.status_text,
-            ft.Divider(),
-            self.start_stop_btn,
-            self.manual_controls,
-            ft.Divider(),
-            ft.Text("Логи выполнения:", weight=ft.FontWeight.BOLD),
-            self.log_output
-        ], alignment=ft.MainAxisAlignment.START)
+        self.start_tab = ft.Column(
+            [
+                self.status_text,
+                ft.Divider(height=1),
+                self.start_stop_btn,
+                self.manual_controls,
+                ft.Divider(height=1),
+                ft.Text("Логи выполнения:", weight=ft.FontWeight.BOLD),
+                self.log_output
+            ],
+            alignment=ft.MainAxisAlignment.START,
+            spacing=10
+        )
     
     def on_mode_change(self, e):
         if self.mode_dropdown.value == "manual":
