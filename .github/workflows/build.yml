@@ -29,7 +29,7 @@ jobs:
 
       - name: Build Android APK
         run: |
-          flet build apk main.py --project-name "StandoffSkinManager" --org "com.skin.manager"
+          flet build apk main.py --project "StandoffSkinManager" --org "com.skin.manager"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
