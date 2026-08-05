@@ -1,0 +1,385 @@
+import os
+import sys
+import time
+import threading
+import flet as ft
+
+# Настройки путей и логики
+TXT_PATH = "/storage/emulated/0/Download/skin_ids.txt"
+LOAD_THRESHOLD = 300000
+STABILIZE_TIME = 3
+REVERT_DELAY = 30
+
+def load_skins_from_txt():
+    """Парсит skin_ids.txt и возвращает словарь { 'Название': ID }"""
+    skins = {}
+    if not os.path.exists(TXT_PATH):
+        return skins
+    
+    try:
+        with open(TXT_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if "public const" in line and "=" in line:
+                    try:
+                        # Пример строки: public const CDGEDEEFGBFDGFD M4A1_JadeStone = 240330;
+                        parts = line.split("=")
+                        name_part = parts[0].strip().split()[-1] # M4A1_JadeStone
+                        id_part = parts[1].replace(";", "").strip() # 240330
+                        skins[name_part] = int(id_part)
+                    except:
+                        pass
+    except Exception as e:
+        print(f"[-] Ошибка чтения файла: {e}")
+    return skins
+
+def find_pid(process_name):
+    for pid in os.listdir('/proc'):
+        if pid.isdigit():
+            try:
+                with open(f'/proc/{pid}/cmdline', 'rb') as f:
+                    if process_name in f.read().decode('utf-8', errors='ignore'):
+                        return int(pid)
+            except:
+                pass
+    return None
+
+def get_writable_regions(pid):
+    regions = []
+    try:
+        with open(f"/proc/{pid}/maps", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and "rw-p" in parts[1]:
+                    addr_range = parts[0].split("-")
+                    regions.append((int(addr_range[0], 16), int(addr_range[1], 16)))
+    except:
+        pass
+    return regions
+
+def find_and_replace(pid, old_bytes, new_bytes):
+    regions = get_writable_regions(pid)
+    if not regions:
+        return [], False
+    
+    replaced = []
+    try:
+        mem_file = open(f"/proc/{pid}/mem", "r+b", buffering=0)
+    except:
+        return [], False
+    
+    for start, end in regions:
+        size = end - start
+        if size <= 0 or size > 50 * 1024 * 1024:
+            continue
+        try:
+            mem_file.seek(start)
+            buffer = mem_file.read(min(size, 10 * 1024 * 1024))
+            pos = 0
+            while True:
+                pos = buffer.find(old_bytes, pos)
+                if pos == -1:
+                    break
+                target = start + pos
+                mem_file.seek(target)
+                mem_file.write(new_bytes)
+                replaced.append(target)
+                pos += len(old_bytes)
+        except:
+            pass
+    mem_file.close()
+    return replaced, len(replaced) > 0
+
+def revert_changes(pid, addresses, old_bytes, new_bytes):
+    if not addresses:
+        return False
+    try:
+        mem_file = open(f"/proc/{pid}/mem", "r+b", buffering=0)
+    except:
+        return False
+    
+    reverted = 0
+    for addr in addresses:
+        try:
+            mem_file.seek(addr)
+            if mem_file.read(len(new_bytes)) == new_bytes:
+                mem_file.seek(addr)
+                mem_file.write(old_bytes)
+                reverted += 1
+        except:
+            pass
+    mem_file.close()
+    return reverted > 0
+
+def get_memory_usage(pid):
+    try:
+        with open(f"/proc/{pid}/status", "r") as f:
+            for line in f:
+                if "VmRSS" in line:
+                    return int(line.split()[1])
+    except:
+        return 0
+
+def main(page: ft.Page):
+    page.title = "Standoff 2 Skin Manager"
+    page.window_width = 400
+    page.window_height = 600
+    page.theme_mode = ft.ThemeMode.DARK
+
+    skins_dict = load_skins_from_txt()
+    skin_names = list(skins_dict.keys())
+
+    # Глобальные переменные состояния
+    config = {
+        "mode": "auto",       # 'auto' или 'manual'
+        "old_id": None,
+        "new_id": None,
+        "is_running": False,
+        "last_addresses": []
+    }
+
+    status_text = ft.Text("Статус: Остановлен", color=ft.colors.RED, weight=ft.FontWeight.BOLD)
+    log_output = ft.Text("Логи: Ожидание действий...", size=12, color=ft.colors.GREY_400)
+
+    # --- ВКЛАДКА: IN (Инвентарь / Выбор скинов) ---
+    old_search = ft.TextField(label="Найти старый скин (например, M4A1)", text_size=12)
+    old_suggestions = ft.ListView(expand=1, spacing=2, padding=5, auto_scroll=False, height=100)
+    
+    new_search = ft.TextField(label="Найти новый скин (например, JadeStone)", text_size=12)
+    new_suggestions = ft.ListView(expand=1, spacing=2, padding=5, auto_scroll=False, height=100)
+
+    selected_old_txt = ft.Text("Старый: Не выбран", size=12, color=ft.colors.YELLOW)
+    selected_new_txt = ft.Text("Новый: Не выбран", size=12, color=ft.colors.GREEN)
+
+    def filter_skins(e, is_old=True):
+        query = e.control.value.lower()
+        s_list = old_suggestions if is_old else new_suggestions
+        s_list.controls.clear()
+        
+        if len(query) > 1:
+            matches = [name for name in skin_names if query in name.lower()][:15]
+            for name in matches:
+                s_list.controls.append(
+                    ft.ListTile(
+                        title=ft.Text(f"{name} ({skins_dict[name]})", size=12),
+                        on_click=lambda _, n=name, io=is_old: select_skin(n, io)
+                    )
+                )
+        page.update()
+
+    def select_skin(name, is_old):
+        skin_id = skins_dict[name]
+        if is_old:
+            config["old_id"] = skin_id
+            old_search.value = name
+            old_suggestions.controls.clear()
+            selected_old_txt.value = f"Старый: {name} [{skin_id}]"
+        else:
+            config["new_id"] = skin_id
+            new_search.value = name
+            new_suggestions.controls.clear()
+            selected_new_txt.value = f"Новый: {name} [{skin_id}]"
+        page.update()
+
+    old_search.on_change = lambda e: filter_skins(e, True)
+    new_search.on_change = lambda e: filter_skins(e, False)
+
+    inv_tab = ft.Column([
+        ft.Text(f"Загружено скинов из TXT: {len(skins_dict)}", size=12, color=ft.colors.BLUE_200),
+        old_search,
+        old_suggestions,
+        selected_old_txt,
+        ft.Divider(),
+        new_search,
+        new_suggestions,
+        selected_new_txt,
+    ], scroll=ft.ScrollMode.AUTO)
+
+    # --- ФОНОВЫЙ ПОТОК РАБОТЫ С ПАМЯТЬЮ ---
+    def worker_loop():
+        pid = find_pid("com.axlebolt.standoff2")
+        if not pid:
+            log_output.value = "[-] Игра не запущена!"
+            page.update()
+            config["is_running"] = False
+            return
+
+        old_bytes = config["old_id"].to_bytes(4, byteorder="little")
+        new_bytes = config["new_id"].to_bytes(4, byteorder="little")
+
+        initial_mem = get_memory_usage(pid)
+        loading_detected = False
+        peak_mem = 0
+        stable_count = 0
+        last_mem = 0
+
+        while config["is_running"]:
+            current_mem = get_memory_usage(pid)
+            if current_mem > 0:
+                diff = current_mem - initial_mem
+                
+                if diff > LOAD_THRESHOLD and not loading_detected:
+                    loading_detected = True
+                    peak_mem = current_mem
+                    log_output.value = "[+] Начало загрузки матча..."
+                    page.update()
+
+                if loading_detected:
+                    if current_mem > peak_mem:
+                        peak_mem = current_mem
+                    
+                    if last_mem > 0:
+                        change = abs(current_mem - last_mem)
+                        if change < 5000:
+                            stable_count += 1
+                            if stable_count >= STABILIZE_TIME:
+                                log_output.value = "[+] 100% загрузки! Применяем скин..."
+                                page.update()
+                                
+                                addrs, success = find_and_replace(pid, old_bytes, new_bytes)
+                                if success:
+                                    config["last_addresses"] = addrs
+                                    log_output.value = f"[+] Успешно заменено: {len(addrs)} адресов"
+                                    page.update()
+                                    
+                                    for i in range(REVERT_DELAY, 0, -1):
+                                        if not config["is_running"]: break
+                                        log_output.value = f"[*] Авто-откат через {i} сек..."
+                                        page.update()
+                                        time.sleep(1)
+                                    
+                                    revert_changes(pid, addrs, old_bytes, new_bytes)
+                                    log_output.value = "[+] Изменения откачены."
+                                    page.update()
+                                
+                                loading_detected = False
+                                stable_count = 0
+                        else:
+                            if change > 10000:
+                                stable_count = 0
+                    last_mem = current_mem
+            time.sleep(1)
+
+    # --- ВКЛАДКА: SETTING (Настройки режимов) ---
+    mode_dropdown = ft.Dropdown(
+        label="Режим работы",
+        value="auto",
+        options=[
+            ft.dropdown.Option("auto", "Автоматический"),
+            ft.dropdown.Option("manual", "Ручной"),
+        ],
+        width=250
+    )
+
+    setting_tab = ft.Column([
+        ft.Text("Параметры запуска", weight=ft.FontWeight.BOLD),
+        mode_dropdown,
+        ft.Text("В автоматическом режиме скрипт сам ждет загрузку матча.\nВ ручном вы управляете кнопками на вкладке Start.", size=11, color=ft.colors.GREY_500)
+    ])
+
+    # --- ВКЛАДКА: START (Управление и запуск) ---
+    def manual_apply(e):
+        if not config["old_id"] or not config["new_id"]:
+            log_output.value = "[-] Сначала выберите скины во вкладке INV!"
+            page.update()
+            return
+        pid = find_pid("com.axlebolt.standoff2")
+        if not pid:
+            log_output.value = "[-] Игра не запущена!"
+            page.update()
+            return
+        
+        old_bytes = config["old_id"].to_bytes(4, byteorder="little")
+        new_bytes = config["new_id"].to_bytes(4, byteorder="little")
+        
+        addrs, success = find_and_replace(pid, old_bytes, new_bytes)
+        if success:
+            config["last_addresses"] = addrs
+            log_output.value = f"[+] Ручная замена успешна! Найдено: {len(addrs)} адресов"
+        else:
+            log_output.value = "[-] Не удалось найти адреса для замены."
+        page.update()
+
+    def manual_revert(e):
+        pid = find_pid("com.axlebolt.standoff2")
+        if not pid or not config["last_addresses"]:
+            log_output.value = "[-] Нечего откатывать!"
+            page.update()
+            return
+        
+        old_bytes = config["old_id"].to_bytes(4, byteorder="little")
+        new_bytes = config["new_id"].to_bytes(4, byteorder="little")
+        
+        if revert_changes(pid, config["last_addresses"], old_bytes, new_bytes):
+            log_output.value = "[+] Успешный ручной откат!"
+        else:
+            log_output.value = "[-] Ошибка отката."
+        page.update()
+
+    def toggle_auto_start(e):
+        if not config["old_id"] or not config["new_id"]:
+            log_output.value = "[-] Выберите скины во вкладке INV!"
+            page.update()
+            return
+        
+        if not config["is_running"]:
+            config["is_running"] = True
+            status_text.value = "Статус: Работает (Авто-мониторинг)"
+            status_text.color = ft.colors.GREEN
+            start_stop_btn.text = "Остановить авто"
+            start_stop_btn.bgcolor = ft.colors.RED
+            threading.Thread(target=worker_loop, daemon=True).start()
+        else:
+            config["is_running"] = False
+            status_text.value = "Статус: Остановлен"
+            status_text.color = ft.colors.RED
+            start_stop_btn.text = "Запустить авто"
+            start_stop_btn.bgcolor = ft.colors.GREEN
+        page.update()
+
+    manual_controls = ft.Column([
+        ft.ElevatedButton("Начать замену", on_click=manual_apply, bgcolor=ft.colors.BLUE, color=ft.colors.WHITE, width=200),
+        ft.ElevatedButton("Бекнуть замену", on_click=manual_revert, bgcolor=ft.colors.ORANGE, color=ft.colors.WHITE, width=200),
+    ], visible=(mode_dropdown.value == "manual"))
+
+    start_stop_btn = ft.ElevatedButton("Запустить авто", on_click=toggle_auto_start, bgcolor=ft.colors.GREEN, color=ft.colors.WHITE, width=200, visible=(mode_dropdown.value == "auto"))
+
+    def on_mode_change(e):
+        if mode_dropdown.value == "manual":
+            config["is_running"] = False
+            manual_controls.visible = True
+            start_stop_btn.visible = False
+            status_text.value = "Статус: Ручной режим"
+        else:
+            manual_controls.visible = false
+            start_stop_btn.visible = True
+            status_text.value = "Статус: Остановлен"
+        page.update()
+
+    mode_dropdown.on_change = on_mode_change
+
+    start_tab = ft.Column([
+        status_text,
+        ft.Divider(),
+        start_stop_btn,
+        manual_controls,
+        ft.Divider(),
+        ft.Text("Логи выполнения:", weight=ft.FontWeight.BOLD),
+        log_output
+    ], alignment=ft.MainAxisAlignment.START)
+
+    # --- СБОРКА ИНТЕРФЕЙСА В ВКЛАДКИ ---
+    page.add(
+        ft.Tabs(
+            selected_index=0,
+            animation_duration=300,
+            tabs=[
+                ft.Tab(text="Start", content=ft.Container(content=start_tab, padding=10)),
+                ft.Tab(text="Inv", content=ft.Container(content=inv_tab, padding=10)),
+                ft.Tab(text="Setting", content=ft.Container(content=setting_tab, padding=10)),
+            ],
+            expand=1
+        )
+    )
+
+ft.app(target=main)
