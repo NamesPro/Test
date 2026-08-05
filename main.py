@@ -169,27 +169,28 @@ class SkinManagerApp:
         # ВКЛАДКА: START
         self.setup_start_tab()
         
-        # ИСПРАВЛЕНО: Используем Tab с параметром tab_content
-        tabs = ft.Tabs(
-            selected_index=0,
-            animation_duration=300,
-            tabs=[
-                ft.Tab(
-                    text="Start",
-                    tab_content=ft.Container(content=self.start_tab, padding=10)
-                ),
-                ft.Tab(
-                    text="Inv",
-                    tab_content=ft.Container(content=self.inv_tab, padding=10)
-                ),
-                ft.Tab(
-                    text="Setting",
-                    tab_content=ft.Container(content=self.setting_tab, padding=10)
-                ),
-            ],
-            expand=1
+        # ИСПРАВЛЕНО: Используем tab_content вместо content
+        self.page.add(
+            ft.Tabs(
+                selected_index=0,
+                animation_duration=300,
+                tabs=[
+                    ft.Tab(
+                        text="Start",
+                        tab_content=ft.Container(content=self.start_tab, padding=10)
+                    ),
+                    ft.Tab(
+                        text="Inv",
+                        tab_content=ft.Container(content=self.inv_tab, padding=10)
+                    ),
+                    ft.Tab(
+                        text="Setting",
+                        tab_content=ft.Container(content=self.setting_tab, padding=10)
+                    ),
+                ],
+                expand=1
+            )
         )
-        self.page.add(tabs)
     
     def setup_inv_tab(self):
         """Настройка вкладки инвентаря"""
@@ -496,4 +497,9 @@ def main(page: ft.Page):
     app = SkinManagerApp(page)
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    # Для Termux используем веб-режим
+    try:
+        ft.run(target=main, view=ft.WEB_BROWSER, port=8550)
+    except:
+        # Если не получается, пробуем обычный режим
+        ft.run(target=main)
