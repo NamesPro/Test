@@ -147,7 +147,7 @@ class SkinManagerApp:
             "worker_thread": None
         }
         
-        # Создаем элементы управления ДО вызова setup_ui
+        # Создаем элементы управления
         self.status_text = ft.Text("Статус: Остановлен", color=ft.Colors.RED, weight=ft.FontWeight.BOLD)
         self.log_output = ft.Text("Логи: Ожидание действий...", size=12, color=ft.Colors.GREY_400)
         
@@ -169,19 +169,27 @@ class SkinManagerApp:
         # ВКЛАДКА: START
         self.setup_start_tab()
         
-        # Сборка интерфейса
-        self.page.add(
-            ft.Tabs(
-                selected_index=0,
-                animation_duration=300,
-                tabs=[
-                    ft.Tab(label="Start", content=ft.Container(content=self.start_tab, padding=10)),
-                    ft.Tab(label="Inv", content=ft.Container(content=self.inv_tab, padding=10)),
-                    ft.Tab(label="Setting", content=ft.Container(content=self.setting_tab, padding=10)),
-                ],
-                expand=1
-            )
+        # ИСПРАВЛЕНО: Используем Tab с параметром tab_content
+        tabs = ft.Tabs(
+            selected_index=0,
+            animation_duration=300,
+            tabs=[
+                ft.Tab(
+                    text="Start",
+                    tab_content=ft.Container(content=self.start_tab, padding=10)
+                ),
+                ft.Tab(
+                    text="Inv",
+                    tab_content=ft.Container(content=self.inv_tab, padding=10)
+                ),
+                ft.Tab(
+                    text="Setting",
+                    tab_content=ft.Container(content=self.setting_tab, padding=10)
+                ),
+            ],
+            expand=1
         )
+        self.page.add(tabs)
     
     def setup_inv_tab(self):
         """Настройка вкладки инвентаря"""
